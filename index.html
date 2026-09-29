@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Mock Open CTI Softphone</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; padding: 12px; font-size: 14px; }
+  h3 { margin: 0 0 10px; }
+  input, button { width: 100%; box-sizing: border-box; padding: 8px; margin: 4px 0; font-size: 14px; }
+  button { cursor: pointer; border: 0; border-radius: 4px; color: #fff; background: #0176d3; }
+  button.green { background: #2e844a; }
+  button.red { background: #ba0517; }
+  button:disabled { background: #c9c9c9; cursor: not-allowed; }
+  #status { padding: 6px; background: #f3f3f3; border-radius: 4px; margin-bottom: 8px; }
+  #log { font-size: 11px; color: #555; max-height: 90px; overflow: auto; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h3>Mock Softphone</h3>
+<div id="status">Loading Open CTI...</div>
+
+<label>Phone number</label>
+<input id="number" value="4155551234">
+<button id="ring">Simulate incoming call</button>
+<button id="answer" class="green" disabled>Answer</button>
+<button id="end" class="red" disabled>End call</button>
+<input id="notes" placeholder="Call notes (saved to Task)">
+<div id="log"></div>
+
+<script>
+// Domain of your org, e.g. mydomain.my.salesforce.com
+// Pass it in the Adapter URL as ?domain=... or hardcode it here.
+const params = new URLSearchParams(location.search);
+const SF_DOMAIN = params.get('domain') || 'YOUR-DOMAIN.my.salesforce.com';
+const API_VERSION = '59.0';
+
+const $ = id => document.getElementById(id);
+let startTime = null, timer = null, callType = 'Inbound';
+
+function log(msg) {
+  $('log').innerHTML = new Date().toLocaleTimeString() + ' ' + msg + '<br>' + $('log').innerHTML;
+}
+function setStatus(s) { $('status').textContent = s; }
+
+const s = document.createElement('script');
+s.src = 'https://' + SF_DOMAIN + '/support/api/' + API_VERSION + '/lightning/opencti_min.js';
+s.onload = init;
+s.onerror = () => setStatus('Could not load opencti_min.js. Check the domain parameter.');
+document.head.appendChild(s);
+
+function init() {
+  setStatus('Ready');
+  log('Open CTI loaded');
+
+  sforce.opencti.enableClickToDial({ callback: r => log('Click-to-dial enabled: ' + r.success) });
+  sforce.opencti.onClickToDial({
+    listener: p => {
+      log('Click-to-dial: ' + p.number);
+      $('number').value = p.number;
+      sforce.opencti.setSoftphonePanelVisibility({ visible: true });
+      startCall('Outbound', p);
+    }
+  });
+
+  $('ring').onclick = () => {
+    callType = 'Inbound';
+    setStatus('Incoming call from ' + $('number').value);
+    sforce.opencti.setSoftphonePanelVisibility({ visible: true });
+    $('answer').disabled = false;
+    $('ring').disabled = true;
+  };
+
+  $('answer').onclick = () => startCall('Inbound');
+  $('end').onclick = endCall;
+}
+
+function startCall(type, clickPayload) {
+  callType = type;
+  startTime = Date.now();
+  $('answer').disabled = true;
+  $('ring').disabled = true;
+  $('end').disabled = false;
+  const num = $('number').value;
+
+  if (type === 'Inbound') {
+    // Search Contacts/Leads/Accounts by phone and open the match
+    sforce.opencti.searchAndScreenPop({
+      searchParams: num,
+      queryParams: '',
+      callType: sforce.opencti.CALL_TYPE.INBOUND,
+      deferred: false,
+      callback: r => log('Screen pop: ' + (r.success ? 'ok' : JSON.stringify(r.errors)))
+    });
+  }
+  timer = setInterval(() => {
+    const sec = Math.floor((Date.now() - startTime) / 1000);
+    setStatus(type + ' call with ' + num + ' (' + sec + 's)');
+  }, 1000);
+}
+
+function endCall() {
+  clearInterval(timer);
+  const secs = Math.max(1, Math.round((Date.now() - startTime) / 1000));
+  const num = $('number').value;
+
+  sforce.opencti.saveLog({
+    value: {
+      entityApiName: 'Task',
+      Subject: 'Call ' + (callType === 'Inbound' ? 'from ' : 'to ') + num,
+      Status: 'Completed',
+      CallType: callType,
+      CallDurationInSeconds: secs,
+      Description: $('notes').value || 'Mock CTI call'
+    },
+    callback: r => log(r.success ? 'Task saved' : 'Save failed: ' + JSON.stringify(r.errors))
+  });
+
+  setStatus('Ready');
+  $('end').disabled = true;
+  $('ring').disabled = false;
+  $('notes').value = '';
+}
+</script>
+</body>
+</html>
